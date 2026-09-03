@@ -192,7 +192,7 @@ def main():
     visc_cone.cfg_dir = "nonequilibrium/visc_wedge"
     visc_cone.cfg_file = "axi_visccone.cfg"
     visc_cone.test_iter = 10
-    visc_cone.test_vals = [-5.113779, -5.637767, -20.549789, -20.502278, -20.414074, 1.473388, -3.120680, -0.014621, 0.092458, 42636.000000]
+    visc_cone.test_vals = [-5.298545, -5.823026, -20.404788, -20.318330, -20.378801, 1.067473, -3.250998, -0.015489, 0.095136, 24939.000000]
     visc_cone.test_vals_aarch64 = [-5.222270, -5.746525, -20.560286, -20.510152, -20.409101, 1.255758, -3.208382, -0.016014, 0.093462, 32619.000000]
     test_list.append(visc_cone)
 
@@ -209,7 +209,7 @@ def main():
     super_cat.cfg_dir = "nonequilibrium/visc_wedge"
     super_cat.cfg_file = "super_cat.cfg"
     super_cat.test_iter = 10
-    super_cat.test_vals = [-5.139246, -5.664499, -20.627913, -20.635875, -20.535513, 1.463689, -3.125078, -0.030085, 0.252806, 42282.000000]
+    super_cat.test_vals = [-5.309257, -5.834048, -21.098287, -21.157699, -21.180688, 1.056908, -3.252349, -0.028039, 0.252019, 24878.000000]
     test_list.append(super_cat)
 
     # Viscous single wedge - partially catalytic walls
@@ -225,8 +225,18 @@ def main():
     ion_gy.cfg_dir = "nonequilibrium/visc_cylinder"
     ion_gy.cfg_file = "cyl_ion_gy.cfg"
     ion_gy.test_iter = 10
-    ion_gy.test_vals = [-11.630651, -4.166100, -4.705260, -5.097030, -5.335247, -5.069078, -6.893926, 5.897432, 5.897354, -0.014849, 0.000000, 90090.000000]
+    ion_gy.test_vals = [-12.682344, -4.169796, -4.714319, -5.658742, -5.712605, -5.269125, -7.961372, 3.359972, 1.705292, -0.014849, 0.000000, 90286.000000]
     test_list.append(ion_gy)
+
+    # Ionized cylinder marched from its restart with the residual gate disabled: the
+    # corrected NEMO viscous Jacobian holds the restart state, the previous one diverged.
+    ion_gy_march = TestCase('ion_gy_march')
+    ion_gy_march.cfg_dir = "nonequilibrium/visc_cylinder"
+    ion_gy_march.cfg_file = "cyl_ion_gy_march.cfg"
+    ion_gy_march.test_iter = 99
+    ion_gy_march.test_vals = [-11.662039, -4.203178, -4.868257, -5.462497, -5.232052, -4.960881, -6.951391, 4.541901, 4.552855, -0.014861, 0.000001, 90357.000000]
+    ion_gy_march.tol = 0.01
+    test_list.append(ion_gy_march)
 
     ##########################
     ### Compressible Euler ###

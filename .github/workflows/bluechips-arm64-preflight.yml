@@ -1,0 +1,339 @@
+name: BlueChips targeted Linux ARM64 preflight
+
+on:
+  push:
+    branches:
+      - 'ci/arm64-pr2880-2885-20260905'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bluechips-arm64-pr2880-2885
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Validate fixed target manifest
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      targets: ${{ steps.matrix.outputs.targets }}
+      base_sha: ${{ steps.matrix.outputs.base_sha }}
+      testcases_sha: ${{ steps.matrix.outputs.testcases_sha }}
+      manifest_sha256: ${{ steps.matrix.outputs.manifest_sha256 }}
+    steps:
+      - name: Checkout CI control commit
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate manifest and trigger branch
+        run: |
+          set -euo pipefail
+          manifest=.github/arm64-preflight/targets.json
+          python3 ci/arm64_preflight/validate_targets.py "$manifest"
+          expected_branch=$(jq -r .trigger_branch "$manifest")
+          test "$GITHUB_REF_NAME" = "$expected_branch"
+
+      - name: Generate immutable job matrix
+        id: matrix
+        run: |
+          set -euo pipefail
+          manifest=.github/arm64-preflight/targets.json
+          echo "targets=$(jq -c '{include: .targets}' "$manifest")" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$(jq -r .base_sha "$manifest")" >> "$GITHUB_OUTPUT"
+          echo "testcases_sha=$(jq -r .testcases_sha "$manifest")" >> "$GITHUB_OUTPUT"
+          echo "manifest_sha256=$(sha256sum "$manifest" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+  arm64:
+    name: ARM64 ${{ matrix.id }} (${{ matrix.kind }})
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.prepare.outputs.targets) }}
+    env:
+      BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+      TESTCASES_SHA: ${{ needs.prepare.outputs.testcases_sha }}
+      EXPECTED_MANIFEST_SHA256: ${{ needs.prepare.outputs.manifest_sha256 }}
+      TARGET_ID: ${{ matrix.id }}
+      TARGET_KIND: ${{ matrix.kind }}
+      TARGET_SHA: ${{ matrix.sha }}
+      TARGET_TREE: ${{ matrix.tree }}
+      TARGET_DIFF_SHA256: ${{ matrix.diff_sha256 }}
+      SOURCE_HEADS: ${{ matrix.source_heads }}
+      RUN_UNIT: ${{ matrix.run_unit }}
+      UNIT_FILTER: ${{ matrix.unit_filter }}
+      RUN_MASSFRAC: ${{ matrix.run_massfrac }}
+      VECTOR_POLICY: ${{ matrix.vector_policy }}
+      SERIAL_CASES: ${{ matrix.serial_cases }}
+      MPI_CASES: ${{ matrix.mpi_cases }}
+      CCACHE_DIR: ${{ github.workspace }}/ccache
+      OMP_NUM_THREADS: '1'
+      OMPI_MCA_osc: pt2pt
+
+    steps:
+      - name: Checkout CI control commit
+        uses: actions/checkout@v6
+        with:
+          path: ci-control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout exact solver target
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.sha }}
+          path: source
+          fetch-depth: 1
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Initialize evidence and verify source identity
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/build evidence/environment evidence/tests evidence/vectors
+          cp ci-control/.github/arm64-preflight/targets.json evidence/targets.json
+          printf '%s\n' '${{ toJSON(matrix) }}' > evidence/target.json
+
+          test "$(uname -m)" = aarch64
+          test "$(git -C source rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git -C source rev-parse 'HEAD^{tree}')" = "$TARGET_TREE"
+          test -z "$(git -C source status --porcelain=v1 --untracked-files=no)"
+          git -C source fetch --no-tags --depth=1 origin "$BASE_SHA"
+          test "$(git -C source merge-base "$BASE_SHA" HEAD)" = "$BASE_SHA"
+          actual_diff_sha256=$(
+            git -C source diff --no-ext-diff --no-textconv --no-renames \
+              --binary --full-index --src-prefix=a/ --dst-prefix=b/ \
+              "$BASE_SHA"..HEAD |
+              sha256sum | awk '{print $1}'
+          )
+          test "$actual_diff_sha256" = "$TARGET_DIFF_SHA256"
+          actual_manifest_sha256=$(sha256sum evidence/targets.json | awk '{print $1}')
+          test "$actual_manifest_sha256" = "$EXPECTED_MANIFEST_SHA256"
+
+          git -C source submodule status --recursive > evidence/source-submodules.txt
+          sha256sum \
+            ci-control/.github/workflows/bluechips-arm64-preflight.yml \
+            ci-control/.github/arm64-preflight/targets.json \
+            ci-control/ci/arm64_preflight/check_interrupt_banner.py \
+            ci-control/ci/arm64_preflight/check_massfrac_composition.py \
+            ci-control/ci/arm64_preflight/run_nemo_subset.py \
+            ci-control/ci/arm64_preflight/validate_targets.py \
+            > evidence/control-files.sha256
+          jq -n \
+            --arg target_id "$TARGET_ID" \
+            --arg target_kind "$TARGET_KIND" \
+            --arg target_sha "$TARGET_SHA" \
+            --arg target_tree "$TARGET_TREE" \
+            --arg base_sha "$BASE_SHA" \
+            --arg diff_sha256 "$actual_diff_sha256" \
+            --arg source_heads "$SOURCE_HEADS" \
+            --arg workflow_sha "$GITHUB_SHA" \
+            --arg workflow_ref "$GITHUB_REF" \
+            --arg workflow_run_id "$GITHUB_RUN_ID" \
+            --arg workflow_run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg runner_arch "$(uname -m)" \
+            '{
+              schema_version: 1,
+              target_id: $target_id,
+              target_kind: $target_kind,
+              target_sha: $target_sha,
+              target_tree: $target_tree,
+              base_sha: $base_sha,
+              diff_sha256: $diff_sha256,
+              source_heads: $source_heads,
+              workflow_sha: $workflow_sha,
+              workflow_ref: $workflow_ref,
+              workflow_run_id: $workflow_run_id,
+              workflow_run_attempt: $workflow_run_attempt,
+              runner_arch: $runner_arch
+            }' > evidence/source-authority.json
+
+      - name: Restore compiler cache
+        uses: actions/cache@v5
+        with:
+          path: ccache
+          key: arm64-ccache-${{ matrix.id }}-${{ matrix.sha }}
+          restore-keys: |
+            arm64-ccache-${{ matrix.id }}-
+
+      - name: Install native build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential ca-certificates ccache cmake git jq libopenmpi-dev \
+            ninja-build openmpi-bin pkg-config rsync swig xz-utils
+          dpkg-query -W -f='${binary:Package}\t${Version}\n' \
+            build-essential ca-certificates ccache cmake git jq libopenmpi-dev \
+            ninja-build openmpi-bin pkg-config rsync swig xz-utils \
+            > evidence/environment/package-versions.tsv
+
+      - name: Record ARM64 environment
+        run: |
+          set -euo pipefail
+          cp /etc/os-release evidence/environment/os-release.txt
+          uname -a > evidence/environment/uname.txt
+          lscpu > evidence/environment/lscpu.txt
+          {
+            gcc --version | head -1
+            g++ --version | head -1
+            cmake --version | head -1
+            ninja --version
+            ccache --version | head -1
+            mpirun --version | head -1
+            python3 --version
+            git --version
+          } > evidence/environment/tool-versions.txt
+
+      - name: Configure and build exact target
+        run: |
+          set -euo pipefail
+          export CC='ccache gcc'
+          export CXX='ccache g++'
+          ccache --zero-stats
+          cd source
+          python3 meson.py setup build-arm64 \
+            --buildtype=release --warnlevel=3 --wrap-mode=nodownload \
+            -Dcpu-arch=armv9-a+simd \
+            -Dwith-mpi=enabled -Dwith-omp=false -Denable-tests=true \
+            -Denable-cgns=false -Denable-tecio=false -Denable-autodiff=false \
+            -Denable-directdiff=false -Denable-pywrapper=false -Denable-mpp=false \
+            -Denable-coolprop=false -Denable-mlpcpp=true -Denable-openblas=false \
+            -Denable-pastix=false \
+            2>&1 | tee ../evidence/build/meson-setup.log
+          build_targets=(SU2_CFD/src/SU2_CFD)
+          if test "$RUN_UNIT" = true; then
+            build_targets+=(UnitTests/test_driver)
+          fi
+          ninja -C build-arm64 -j "$(nproc)" "${build_targets[@]}" \
+            2>&1 | tee ../evidence/build/ninja.log
+          sha256sum build-arm64/SU2_CFD/src/SU2_CFD \
+            > ../evidence/build/binaries.sha256
+          if test "$RUN_UNIT" = true; then
+            sha256sum build-arm64/UnitTests/test_driver \
+              >> ../evidence/build/binaries.sha256
+          fi
+          ccache --show-stats > ../evidence/build/ccache-stats.txt
+
+      - name: Run complete normal unit driver
+        if: ${{ matrix.run_unit }}
+        run: |
+          set -euo pipefail
+          mkdir -p unit-layout/src
+          ln -s ../../source unit-layout/src/SU2
+          cd unit-layout
+          ../source/build-arm64/UnitTests/test_driver 2>&1 |
+            tee ../evidence/tests/unit-full.log
+
+      - name: Run focused unit selection
+        if: ${{ matrix.run_unit && matrix.unit_filter != '' }}
+        run: |
+          set -euo pipefail
+          cd unit-layout
+          ../source/build-arm64/UnitTests/test_driver "$UNIT_FILTER" 2>&1 |
+            tee ../evidence/tests/unit-focused.log
+
+      - name: Verify interrupt exit banner
+        if: ${{ matrix.run_interrupt }}
+        run: |
+          set -euo pipefail
+          python3 ci-control/ci/arm64_preflight/check_interrupt_banner.py \
+            --source source \
+            --binary source/build-arm64/SU2_CFD/src/SU2_CFD \
+            --output evidence/tests/interrupt-banner.json \
+            2>&1 | tee evidence/tests/interrupt-banner-harness.log
+
+      - name: Checkout hash-pinned TestCases data
+        if: ${{ matrix.harvest || matrix.run_massfrac }}
+        uses: actions/checkout@v6
+        with:
+          repository: su2code/TestCases
+          ref: ${{ needs.prepare.outputs.testcases_sha }}
+          path: test-data
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            nonequilibrium/invwedge
+            nonequilibrium/thermalbath/finitechemistry
+            nonequilibrium/visc_wedge
+            nonequilibrium/visc_cylinder
+          sparse-checkout-cone-mode: true
+
+      - name: Verify TestCases data identity
+        if: ${{ matrix.harvest || matrix.run_massfrac }}
+        run: |
+          set -euo pipefail
+          test "$(git -C test-data rev-parse HEAD)" = "$TESTCASES_SHA"
+          test -z "$(git -C test-data status --porcelain=v1 --untracked-files=no)"
+          git -C test-data sparse-checkout list > evidence/testcases-sparse-paths.txt
+          find test-data/nonequilibrium \
+            -type f \( -name '*.su2' -o -name '*.dat' -o -name '*.cfg' \) \
+            -print0 | sort -z | xargs -0 sha256sum \
+            > evidence/testcases-inputs.sha256
+
+      - name: Verify NEMO mass-fraction acceptance matrix
+        if: ${{ matrix.run_massfrac }}
+        run: |
+          set -euo pipefail
+          python3 ci-control/ci/arm64_preflight/check_massfrac_composition.py \
+            --source source \
+            --test-data test-data \
+            --binary source/build-arm64/SU2_CFD/src/SU2_CFD \
+            --output evidence/tests/massfrac-composition.json \
+            2>&1 | tee evidence/tests/massfrac-composition-harness.log
+
+      - name: Harvest or verify serial NEMO vectors
+        if: ${{ matrix.harvest && matrix.serial_cases != '' }}
+        run: |
+          set -euo pipefail
+          python3 ci-control/ci/arm64_preflight/run_nemo_subset.py \
+            --source source \
+            --test-data test-data \
+            --binary source/build-arm64/SU2_CFD/src/SU2_CFD \
+            --mode serial \
+            --cases "$SERIAL_CASES" \
+            --label "$TARGET_ID" \
+            --policy "$VECTOR_POLICY" \
+            --output evidence/vectors/serial.json \
+            2>&1 | tee evidence/vectors/serial-harness.log
+
+      - name: Harvest or verify two-rank MPI NEMO vectors
+        if: ${{ matrix.harvest && matrix.mpi_cases != '' }}
+        run: |
+          set -euo pipefail
+          python3 ci-control/ci/arm64_preflight/run_nemo_subset.py \
+            --source source \
+            --test-data test-data \
+            --binary source/build-arm64/SU2_CFD/src/SU2_CFD \
+            --mode mpi \
+            --cases "$MPI_CASES" \
+            --label "$TARGET_ID" \
+            --policy "$VECTOR_POLICY" \
+            --output evidence/vectors/mpi.json \
+            2>&1 | tee evidence/vectors/mpi-harness.log
+
+      - name: Seal evidence manifest
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          git -C source status --porcelain=v1 --untracked-files=no \
+            > evidence/source-status-end.txt || true
+          find evidence -type f ! -name MANIFEST.sha256 -print0 |
+            sort -z | xargs -0 sha256sum > evidence/MANIFEST.sha256
+
+      - name: Upload hash-bound evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: bluechips-arm64-${{ matrix.id }}-${{ matrix.sha }}
+          path: evidence
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

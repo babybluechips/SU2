@@ -89,7 +89,9 @@ jobs:
         with:
           ref: ${{ matrix.sha }}
           path: source
-          fetch-depth: 1
+          # The longest fixed target is five commits above BASE_SHA. Keep its
+          # ancestry locally so the identity gate can prove the merge base.
+          fetch-depth: 8
           submodules: recursive
           persist-credentials: false
 
@@ -104,7 +106,7 @@ jobs:
           test "$(git -C source rev-parse HEAD)" = "$TARGET_SHA"
           test "$(git -C source rev-parse 'HEAD^{tree}')" = "$TARGET_TREE"
           test -z "$(git -C source status --porcelain=v1 --untracked-files=no)"
-          git -C source fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git -C source cat-file -e "$BASE_SHA^{commit}"
           test "$(git -C source merge-base "$BASE_SHA" HEAD)" = "$BASE_SHA"
           actual_diff_sha256=$(
             git -C source diff --no-ext-diff --no-textconv --no-renames \

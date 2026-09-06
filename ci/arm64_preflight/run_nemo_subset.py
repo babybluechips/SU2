@@ -146,8 +146,10 @@ def expected_values(source: Path, mode: str, case: str) -> dict[str, Any]:
     default_tolerance = parse_literal_assignment(text, variable, "tol")
     effective = arm if arm else default
     tolerance = arm_tolerance if arm_tolerance not in (None, 0, 0.0) else default_tolerance
-    if tolerance is None:
-        tolerance = 0.0
+    # The public serial and parallel regression drivers use 0.0 as an unset
+    # sentinel and replace it with 1e-5 before calling TestCase.run_test().
+    if tolerance in (None, 0, 0.0):
+        tolerance = 1e-5
     return {
         "script": str(script.relative_to(source)),
         "variable": variable,

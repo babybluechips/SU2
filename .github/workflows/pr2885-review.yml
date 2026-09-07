@@ -1,0 +1,101 @@
+name: PR2885 focused review checks
+
+on:
+  push:
+    branches: [ci/pr2885-review-20260907]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr2885-focused-review
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'babybluechips/SU2'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      source_sha: ${{ steps.target.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Require a fully bound target before starting builds
+        id: target
+        run: python3 -B ci/pr2885_review/run_review.py validate --manifest ci/pr2885_review/target.json --github-output "$GITHUB_OUTPUT"
+
+  review:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [nompi, mpi]
+    env:
+      MODE: ${{ matrix.mode }}
+      IMAGE: ghcr.io/su2code/su2/build-su2:260405-0054
+    steps:
+      - name: Checkout CI control only
+        uses: actions/checkout@v6
+        with:
+          path: control
+          persist-credentials: false
+      - name: Initialize artifact directory
+        run: |
+          mkdir -p evidence
+          cp control/.github/workflows/pr2885-review.yml evidence/workflow.yml
+          cp control/ci/pr2885_review/target.json evidence/target.json
+          cp control/ci/pr2885_review/run_review.py evidence/run_review.py
+      - name: Checkout exact PR revision
+        uses: actions/checkout@v6
+        with:
+          repository: babybluechips/SU2
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          path: source
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Checkout exact public test data
+        uses: actions/checkout@v6
+        with:
+          repository: su2code/TestCases
+          ref: 01b80cf2edfc69b7a545368747bd511c6d732aec
+          path: test-data
+          persist-credentials: false
+          sparse-checkout: |
+            nonequilibrium/visc_wedge
+            nonequilibrium/visc_cylinder
+          sparse-checkout-cone-mode: true
+      - name: Pull the official build image and record its resolved identity
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE" 2>&1 | tee evidence/image-pull.log
+          docker image inspect "$IMAGE" --format '{{json .RepoDigests}}' > evidence/image-repodigests.json
+          docker image inspect "$IMAGE" --format '{{.Id}}' > evidence/image-id.txt
+      - name: Build and test checked-out source with the official toolchain
+        run: |
+          set -euo pipefail
+          docker run --rm --init --cpus=2 --memory=7g --pids-limit=1024 \
+            --entrypoint /bin/bash \
+            -e MODE -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 \
+            -e OMPI_MCA_osc=pt2pt -e OMPI_ALLOW_RUN_AS_ROOT=1 -e OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 \
+            -v "$PWD:/review" -w /review "$IMAGE" -lc \
+            'python3 -B control/ci/pr2885_review/run_review.py run --manifest control/ci/pr2885_review/target.json --source source --test-data test-data --evidence evidence --mode "$MODE"' \
+            2>&1 | tee evidence/container.log
+      - name: Index all captured evidence, also on failure
+        if: always()
+        run: |
+          if test -f control/ci/pr2885_review/run_review.py; then
+            python3 -B control/ci/pr2885_review/run_review.py seal --evidence evidence
+          fi
+      - name: Preserve results and all failure logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr2885-review-${{ matrix.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30

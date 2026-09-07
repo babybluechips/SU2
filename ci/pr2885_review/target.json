@@ -1,0 +1,27 @@
+{
+  "schema": "pr2885-focused-ci.v1",
+  "repository": "babybluechips/SU2",
+  "base_sha": "07aa46b1868655ec01f534bf3ac84ba5fbb6b822",
+  "source_sha": "cd8a39d097ef15251318da727b4cf950d41cef3f",
+  "source_tree": "872c42731d6c591afa8b6d42a63cb7054e082004",
+  "source_diff_sha256": "26b4e21c9cefb6cd2f3294ad8ad1525aad2c8b74f03c04b0c12bacec684f20d2",
+  "testcases_sha": "01b80cf2edfc69b7a545368747bd511c6d732aec",
+  "image": "ghcr.io/su2code/su2/build-su2:260405-0054",
+  "build_jobs": 2,
+  "build_timeout_seconds": 3600,
+  "unit_timeout_seconds": 600,
+  "case_timeout_seconds": 1600,
+  "job_workload_timeout_seconds": 5400,
+  "require_identical_ion_printed_rows": true,
+  "selections": {
+    "nompi": [
+      "visc_cone"
+    ],
+    "mpi": [
+      "visc_cone",
+      "super_cat",
+      "ion_gy",
+      "ion_gy"
+    ]
+  }
+}

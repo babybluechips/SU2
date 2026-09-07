@@ -21,6 +21,7 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 
 BASE = "07aa46b1868655ec01f534bf3ac84ba5fbb6b822"
 DATA = "01b80cf2edfc69b7a545368747bd511c6d732aec"
@@ -286,12 +287,110 @@ def stop_group(session, sig):
         pass
 
 
-def bounded(command, cwd, log, seconds):
+def build_environment(source, submodules):
+    # Meson's own Git subprocesses must trust only these verified mounted paths.
+    source = source.resolve()
+    paths = [source]
+    for line in submodules:
+        match = re.fullmatch(r" ?[0-9a-f]{40} (\S+)(?: \([^\n]*\))?", line)
+        require(match is not None, "invalid submodule path record")
+        relative = Path(match[1])
+        require(
+            not relative.is_absolute() and ".." not in relative.parts,
+            "submodule path escapes source",
+        )
+        path = source / relative
+        require(
+            path.is_dir() and path.resolve() == path and path != source,
+            "submodule path is missing, aliased or outside source",
+        )
+        paths.append(path)
+    environment = os.environ.copy()
+    for key in list(environment):
+        if key in ("GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS") or re.fullmatch(
+            r"GIT_CONFIG_(KEY|VALUE)_\d+", key
+        ):
+            del environment[key]
+    environment["GIT_CONFIG_COUNT"] = str(len(paths))
+    for index, path in enumerate(paths):
+        environment["GIT_CONFIG_KEY_" + str(index)] = "safe.directory"
+        environment["GIT_CONFIG_VALUE_" + str(index)] = str(path)
+    return environment, [str(path) for path in paths]
+
+
+def emit_log_tail(path, name, limit=65536):
+    if not path.is_file() or path.is_symlink():
+        return
+    try:
+        with path.open("rb") as source:
+            source.seek(max(0, path.stat().st_size - limit))
+            tail = source.read().decode("utf-8", errors="replace")
+        print("--- captured log: %s (last %d bytes) ---" % (name, limit), flush=True)
+        print(tail, flush=True)
+    except OSError as exc:
+        print("Could not print " + name + ": " + str(exc), flush=True)
+
+
+def emit_result_summary(evidence, outcome):
+    summary = {key: value for key, value in outcome.items() if key != "cases"}
+    summary["cases"] = [
+        {
+            key: case[key]
+            for key in (
+                "case",
+                "repeat",
+                "pass",
+                "execution",
+                "testcase",
+                "computed_target_row",
+                "supplemental_finite_row_error",
+                "inputs_unchanged",
+                "seed_before_sha256",
+                "seed_after_sha256",
+            )
+            if key in case
+        }
+        for case in outcome["cases"]
+    ]
+    print("PR2885 result: " + json.dumps(summary, sort_keys=True), flush=True)
+    emit_log_tail(
+        evidence / "tests/full-normal-unit.catch.log", "full normal unit report", 4096
+    )
+
+
+def emit_failure_diagnostics(evidence, outcome):
+    summary = {
+        key: outcome[key]
+        for key in ("mode", "pass", "error", "final_integrity_error")
+        if key in outcome
+    }
+    print("PR2885 failure summary: " + json.dumps(summary, sort_keys=True), flush=True)
+    names = [
+        "failure-traceback.txt",
+        "build/configure.log",
+        "build/meson-log.txt",
+        "build/compile.log",
+        "tests/full-normal-unit.catch.log",
+        "tests/full-normal-unit.stdout.log",
+    ]
+    counts = {}
+    for case in SELECTIONS[outcome["mode"]]:
+        counts[case] = counts.get(case, 0) + 1
+        folder = "cases/" + case + "-r" + str(counts[case]) + "/"
+        names.extend(
+            (folder + "testcase-driver.log", folder + CASE_CONFIGS[case] + ".log")
+        )
+    for name in names:
+        emit_log_tail(evidence / name, name)
+
+
+def bounded(command, cwd, log, seconds, env=None):
     if DEADLINE is not None:
         seconds = min(seconds, int(DEADLINE - time.monotonic() - 45))
     require(seconds > 0, "workload deadline reached")
     log.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
+    print("Starting captured command: " + shlex.join(command), flush=True)
     with log.open("w") as output:
         process = subprocess.Popen(
             command,
@@ -299,6 +398,7 @@ def bounded(command, cwd, log, seconds):
             stdout=output,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=env,
         )
         timed_out = False
         try:
@@ -320,7 +420,7 @@ def bounded(command, cwd, log, seconds):
         require(
             not session_members(process.pid), "owned command session did not quiesce"
         )
-    return {
+    result = {
         "command": command,
         "returncode": code,
         "timed_out": timed_out,
@@ -330,6 +430,12 @@ def bounded(command, cwd, log, seconds):
         "wall_seconds": round(time.monotonic() - started, 3),
         "log_sha256": sha(log),
     }
+    print(
+        "Captured command completed: returncode=%d timed_out=%s log=%s"
+        % (code, timed_out, log),
+        flush=True,
+    )
+    return result
 
 
 def config_values(path):
@@ -508,6 +614,8 @@ def run(args):
         authority, patch = source_authority(source, data, target)
         save(evidence / "source-authority.json", authority)
         (evidence / "source.diff").write_bytes(patch)
+        build_env, safe_paths = build_environment(source, authority["submodules"])
+        save(evidence / "build-git-safe-directories.json", safe_paths)
         script, cases = definitions(source, args.mode)
         (evidence / "source").mkdir(exist_ok=True)
         for p in (script, source / "TestCases/TestCase.py"):
@@ -570,8 +678,12 @@ def run(args):
             source,
             evidence / "build/configure.log",
             900,
+            env=build_env,
         )
         outcome["configure"] = setup
+        meson_log = build / "meson-logs/meson-log.txt"
+        if meson_log.is_file():
+            shutil.copy2(meson_log, evidence / "build/meson-log.txt")
         require(setup["clean_exit"], "configuration failed")
         compilation = bounded(
             [
@@ -586,6 +698,7 @@ def run(args):
             source,
             evidence / "build/compile.log",
             3600,
+            env=build_env,
         )
         outcome["build"] = compilation
         for name in (
@@ -673,6 +786,7 @@ def run(args):
         )
     except Exception as exc:
         outcome["error"] = str(exc)
+        (evidence / "failure-traceback.txt").write_text(traceback.format_exc())
     finally:
         try:
             final, _ = source_authority(source, data, target)
@@ -696,6 +810,9 @@ def run(args):
             "claim_boundary"
         ] = "Targeted checked-in TestCase regression comparisons and full normal units; not convergence validation or upstream protected CI."
         save(evidence / "result.json", outcome)
+        emit_result_summary(evidence, outcome)
+        if not outcome["pass"]:
+            emit_failure_diagnostics(evidence, outcome)
     return 0 if outcome["pass"] else 1
 
 

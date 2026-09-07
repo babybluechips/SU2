@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Offline preparation checks. No build, solver, process cleanup or network calls."""
 import copy
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -119,6 +121,74 @@ class Checks(unittest.TestCase):
         (self.root / "link.txt").symlink_to(self.root / "source.txt")
         with self.assertRaisesRegex(RuntimeError, "symlink"):
             review.tree_files(self.root)
+
+    def test_build_git_trust_is_exact_and_subprocess_only(self):
+        source = self.root / "source"
+        (source / "externals/nested").mkdir(parents=True)
+        original = {
+            "KEEP": "value",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "safe.directory",
+            "GIT_CONFIG_VALUE_0": "*",
+        }
+        with patch.dict(review.os.environ, original, clear=True):
+            environment, paths = review.build_environment(
+                source, [" " + "1" * 40 + " externals/nested (heads/main)"]
+            )
+            self.assertEqual(dict(review.os.environ), original)
+        self.assertEqual(
+            paths, [str(source.resolve()), str((source / "externals/nested").resolve())]
+        )
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "2")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_0"], paths[0])
+        self.assertEqual(environment["GIT_CONFIG_VALUE_1"], paths[1])
+        self.assertEqual(environment["KEEP"], "value")
+        for bad in ("../elsewhere", "/tmp/elsewhere", "."):
+            with self.subTest(path=bad), self.assertRaises(RuntimeError):
+                review.build_environment(source, [" " + "1" * 40 + " " + bad])
+        (source / "alias").symlink_to(source / "externals/nested")
+        with self.assertRaises(RuntimeError):
+            review.build_environment(source, [" " + "1" * 40 + " alias"])
+
+    def test_failure_details_and_success_rows_visible_with_bounded_logs(self):
+        (self.root / "build").mkdir()
+        (self.root / "build/configure.log").write_text(
+            "HEADER" + "x" * 70000 + "MESON_FAILURE"
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            review.emit_failure_diagnostics(
+                self.root,
+                {"mode": "nompi", "pass": False, "error": "configuration failed"},
+            )
+        self.assertIn("configuration failed", output.getvalue())
+        self.assertIn("MESON_FAILURE", output.getvalue())
+        self.assertNotIn("HEADER", output.getvalue())
+        self.assertLess(len(output.getvalue()), 67000)
+        (self.root / "tests").mkdir()
+        (self.root / "tests/full-normal-unit.catch.log").write_text(
+            "All tests passed (7 assertions in 2 test cases)"
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            review.emit_result_summary(
+                self.root,
+                {
+                    "mode": "nompi",
+                    "pass": True,
+                    "cases": [
+                        {
+                            "case": "visc_cone",
+                            "pass": True,
+                            "computed_target_row": [1.0, 2.0],
+                            "inputs_before": {"excluded": "large inventory"},
+                        }
+                    ],
+                },
+            )
+        self.assertIn('"computed_target_row": [1.0, 2.0]', output.getvalue())
+        self.assertIn("7 assertions in 2 test cases", output.getvalue())
+        self.assertNotIn("inputs_before", output.getvalue())
 
     def test_quiescence_includes_other_groups_in_owned_session(self):
         class Entry:

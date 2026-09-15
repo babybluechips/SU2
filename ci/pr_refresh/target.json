@@ -1,0 +1,31 @@
+{
+  "base_sha": "56df7491c9027fd28c83d8b09617c2852ccd078e",
+  "build_jobs": 2,
+  "build_timeout_seconds": 1800,
+  "case_timeout_seconds": 1600,
+  "configure_timeout_seconds": 600,
+  "image": "ghcr.io/su2code/su2/build-su2:260405-0054",
+  "job_workload_timeout_seconds": 4800,
+  "repeats": 2,
+  "repository": "babybluechips/SU2",
+  "schema": "su2-pr-refresh-focused-ci.v1",
+  "targets": {
+    "2882": {
+      "source_diff_sha256": null,
+      "source_sha": null,
+      "source_tree": null
+    },
+    "2883": {
+      "source_diff_sha256": "ec4a2829b92c4f4fce7e68aed4c0cb8782f368452ca10d967c94b934df71519c",
+      "source_sha": "a3a60bfa6d25f60066f2a892ea85841df986862d",
+      "source_tree": "162305252aa2bafffb23b47a642245c5c4c81b13"
+    },
+    "2884": {
+      "source_diff_sha256": "df70c67b1242fe6170424d76178032975329b2349e3a97ce87e05946be770680",
+      "source_sha": "2c4398c441f7afe690b30debc0ce3b918021bc76",
+      "source_tree": "9b01cee7bbfad88a297f1dc7fcc53cc5518b9851"
+    }
+  },
+  "testcases_sha": "01b80cf2edfc69b7a545368747bd511c6d732aec",
+  "unit_timeout_seconds": 300
+}

@@ -1,0 +1,22 @@
+{
+  "base_sha": "8118ee0f507b5fb0fd70b819e6f1351c1b3c6d28",
+  "build_jobs": 2,
+  "build_timeout_seconds": 1800,
+  "case_timeout_seconds": 1600,
+  "configure_timeout_seconds": 600,
+  "image": "ghcr.io/su2code/su2/build-su2:260405-0054",
+  "job_workload_timeout_seconds": 4800,
+  "repeats": 2,
+  "repository": "babybluechips/SU2",
+  "schema": "su2-pr2884-prepared-integration-ci.v1",
+  "targets": {
+    "2884": {
+      "public_pr_head_sha": "91a43fc61048dd853138545ca69ec5060cef6cd1",
+      "source_diff_sha256": "c13f8ea5b25ea1542bfca9928e31a6521076fd2649f3179d5ad0c60f98f9673f",
+      "source_sha": "7e89cb6be1a869a61f9425bd069dc1ac6aa3d699",
+      "source_tree": "d441da913c0bd22daf566ad5ebc9b65d7347262d"
+    }
+  },
+  "testcases_sha": "01b80cf2edfc69b7a545368747bd511c6d732aec",
+  "unit_timeout_seconds": 300
+}

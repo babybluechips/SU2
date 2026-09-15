@@ -1,0 +1,106 @@
+name: SU2 PR2884 prepared integration controls
+
+on:
+  push:
+    branches: [ci/pr2884-integration-20260915]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: su2-pr2884-prepared-integration
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'babybluechips/SU2' && github.ref == 'refs/heads/ci/pr2884-integration-20260915'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.bound.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - id: bound
+        run: python3 -B ci/pr_refresh/run_review.py validate --manifest ci/pr_refresh/target.json --prs 2884 --architectures both --github-output "$GITHUB_OUTPUT"
+
+  review:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      IMAGE: ghcr.io/su2code/su2/build-su2:260405-0054
+      TARGET_PR: ${{ matrix.pr }}
+      SOURCE_SHA: ${{ matrix.source_sha }}
+      TARGET_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          persist-credentials: false
+      - name: Initialize immutable-at-seal evidence
+        run: |
+          mkdir evidence
+          cp control/.github/workflows/pr-refresh-review.yml evidence/workflow.yml
+          cp control/ci/pr_refresh/target.json evidence/target.json
+          cp control/ci/pr_refresh/run_review.py evidence/run_review.py
+      - name: Verify the unchanged public PR head and current develop ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/su2code/SU2/pulls/$TARGET_PR" --jq '{number, state, head_sha: .head.sha, head_repository: .head.repo.full_name, base_sha: .base.sha}' > evidence/public-pr-head.json
+          gh api "repos/su2code/SU2/git/ref/heads/develop" --jq '{ref, sha: .object.sha, type: .object.type}' > evidence/public-develop-ref.json
+          python3 -B control/ci/pr_refresh/run_review.py check-public-state --manifest control/ci/pr_refresh/target.json --receipt evidence/public-pr-head.json --develop-receipt evidence/public-develop-ref.json --pr "$TARGET_PR"
+      - uses: actions/checkout@v6
+        with:
+          repository: babybluechips/SU2
+          ref: ${{ matrix.source_sha }}
+          path: source
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: su2code/TestCases
+          ref: 01b80cf2edfc69b7a545368747bd511c6d732aec
+          path: test-data
+          persist-credentials: false
+          sparse-checkout: |
+            nonequilibrium/invwedge
+            nonequilibrium/visc_wedge
+            nonequilibrium/visc_cylinder
+          sparse-checkout-cone-mode: true
+      - name: Resolve and record the official native build image
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE" 2>&1 | tee evidence/image-pull.log
+          docker image inspect "$IMAGE" --format '{{json .RepoDigests}}' > evidence/image-repodigests.json
+          docker image inspect "$IMAGE" --format '{{json .}}' > evidence/image-inspect.json
+      - name: Build both normal configurations and run focused controls
+        run: |
+          set -euo pipefail
+          docker run --rm --init --cpus=2 --memory=7g --pids-limit=1024 \
+            --entrypoint /bin/bash \
+            -e TARGET_PR -e SOURCE_SHA -e TARGET_ARCH \
+            -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 \
+            -e OMPI_MCA_osc=pt2pt -e OMPI_ALLOW_RUN_AS_ROOT=1 -e OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 \
+            -v "$PWD:/review" -w /review "$IMAGE" -lc \
+            'python3 -B control/ci/pr_refresh/run_review.py run --manifest control/ci/pr_refresh/target.json --pr "$TARGET_PR" --arch "$TARGET_ARCH" --source source --test-data test-data --evidence evidence' \
+            2>&1 | tee evidence/container.log
+      - name: Seal every captured file after execution, including failure evidence
+        if: always()
+        run: python3 -B control/ci/pr_refresh/run_review.py seal --evidence evidence
+      - name: Preserve complete results and failure logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: su2-pr2884-integration-${{ matrix.arch }}-${{ matrix.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30

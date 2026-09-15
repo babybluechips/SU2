@@ -1,0 +1,82 @@
+name: PR2884 existing-binary ramp repeat
+
+on:
+  push:
+    branches: [ci/pr2884-ramp-repeat-20260915]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: pr2884-existing-binary-ramp-repeat
+  cancel-in-progress: false
+
+jobs:
+  repeat:
+    if: github.repository == 'babybluechips/SU2' && github.ref == 'refs/heads/ci/pr2884-ramp-repeat-20260915'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      IMAGE: ghcr.io/su2code/su2/test-su2:260405-0054
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          persist-credentials: false
+      - name: Initialize evidence
+        run: |
+          mkdir evidence
+          cp control/.github/workflows/pr2884-ramp-repeat.yml evidence/workflow.yml
+          cp control/ci/ramp_repeat/target.json evidence/target.json
+          cp control/ci/ramp_repeat/run_repeat.py evidence/run_repeat.py
+      - uses: actions/checkout@v6
+        with:
+          repository: su2code/SU2
+          ref: 56df7491c9027fd28c83d8b09617c2852ccd078e
+          path: source-develop
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: babybluechips/SU2
+          ref: 2c4398c441f7afe690b30debc0ce3b918021bc76
+          path: source-pr2884
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: su2code/TestCases
+          ref: 01b80cf2edfc69b7a545368747bd511c6d732aec
+          path: test-data
+          persist-credentials: false
+          sparse-checkout: euler/ramp
+          sparse-checkout-cone-mode: true
+      - name: Download and verify the exact two upstream BaseMPI ZIPs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: timeout 360s python3 -B control/ci/ramp_repeat/run_repeat.py fetch --manifest control/ci/ramp_repeat/target.json --workspace . --evidence evidence
+      - name: Resolve the official runtime image
+        run: |
+          set -euo pipefail
+          timeout 180s docker pull "$IMAGE" 2>&1 | tee evidence/image-pull.log
+          docker image inspect "$IMAGE" --format '{{json .RepoDigests}}' > evidence/image-repodigests.json
+          docker image inspect "$IMAGE" --format '{{.Id}}' > evidence/image-id.txt
+      - name: Run four fresh two-rank repeats without rebuilding
+        run: |
+          set -euo pipefail
+          timeout 540s docker run --rm --init --cpus=2 --memory=7g --pids-limit=512 \
+            --entrypoint /bin/bash \
+            -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 \
+            -e OMPI_MCA_osc=pt2pt -e OMPI_ALLOW_RUN_AS_ROOT=1 -e OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 \
+            -v "$PWD:/repeat" -w /repeat "$IMAGE" -lc \
+            'python3 -B control/ci/ramp_repeat/run_repeat.py run --manifest control/ci/ramp_repeat/target.json --workspace . --evidence evidence' \
+            2>&1 | tee evidence/container.log
+      - name: Seal all evidence including failures
+        if: always()
+        run: python3 -B control/ci/ramp_repeat/run_repeat.py seal --evidence evidence
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr2884-ramp-repeat-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30

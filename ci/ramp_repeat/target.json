@@ -1,0 +1,31 @@
+{
+  "schema": "su2-ramp-binary-repeat.v1",
+  "repository": "su2code/SU2",
+  "testcases_sha": "01b80cf2edfc69b7a545368747bd511c6d732aec",
+  "image": "ghcr.io/su2code/su2/test-su2:260405-0054",
+  "source_config": "TestCases/euler/ramp/inv_ramp_msw.cfg",
+  "test_iteration": 100,
+  "repeats_per_arm": 2,
+  "workload_timeout_seconds": 480,
+  "case_timeout_seconds": 120,
+  "arms": {
+    "develop": {
+      "source_sha": "56df7491c9027fd28c83d8b09617c2852ccd078e",
+      "build_checkout_sha": "56df7491c9027fd28c83d8b09617c2852ccd078e",
+      "source_tree": "d083576bab36af2b47d2a7a8155a0e92d363a417",
+      "run_id": 34920500061,
+      "artifact_id": 10378356837,
+      "zip_sha256": "b67b05cf207c2c819b459c6c9188c187437c2a1298e78661365c8c8072cb3a0e",
+      "size_in_bytes": 94900743
+    },
+    "pr2884": {
+      "source_sha": "2c4398c441f7afe690b30debc0ce3b918021bc76",
+      "build_checkout_sha": "449cad05bb747c991efbd0f9855b25315c3db94c",
+      "source_tree": "9b01cee7bbfad88a297f1dc7fcc53cc5518b9851",
+      "run_id": 34924309881,
+      "artifact_id": 10379627518,
+      "zip_sha256": "7669563f30545736e58533b34f32e51861f9b38e5f7992b8ed4e096e4b4b1f90",
+      "size_in_bytes": 94913428
+    }
+  }
+}
